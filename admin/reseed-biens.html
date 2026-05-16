@@ -142,10 +142,10 @@
       }));
 
       magasins.forEach(b => all.push({
-        id: `MG-${b.num}`,
-        numero: `MG-${b.num}`,
-        displayName: `Magasin ${b.num} (LC${b.num})`,
-        categorie: "MG",
+        id: `LC-${b.num}`,
+        numero: `LC-${b.num}`,
+        displayName: `Magasin LC-${b.num}`,
+        categorie: "LC",
         type: "MAGASIN",
         typeLogement: null,
         face: b.face,
@@ -270,7 +270,7 @@
               <div class="kpi">
                 <div class="kpi-label">Total biens</div>
                 <div class="kpi-value">${previewBiens.length}</div>
-                <div class="kpi-trend">17 A + 15 B + 7 BR + 8 MG</div>
+                <div class="kpi-trend">17 A + 15 B + 7 BR + 8 LC</div>
               </div>
               <div class="kpi">
                 <div class="kpi-label">Total tantièmes</div>
