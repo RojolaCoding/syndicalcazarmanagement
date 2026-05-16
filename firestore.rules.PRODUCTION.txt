@@ -41,9 +41,13 @@ service cloud.firestore {
     }
 
     // ─── Propriété des biens (N-N pour indivision) ──────────
+    // Création : utilisateur s'auto-associe lors de l'inscription via invitation
+    // (le code d'invitation, créé par l'admin, a déjà acté le lien).
+    // Update/Delete : admin uniquement.
     match /propertyOwnerships/{id} {
       allow read: if isAuth();
-      allow write: if isAdmin();
+      allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
 
     // ─── Charges récurrentes (transparence) ─────────────────

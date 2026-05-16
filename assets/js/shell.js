@@ -7,7 +7,8 @@ import { escapeHtml } from "./utils.js";
 
 const ADMIN_NAV = [
   { label: "Tableau de bord", href: "/admin/dashboard.html" },
-  { label: "Biens & copropriétaires", href: "/admin/biens.html" },
+  { label: "Biens", href: "/admin/biens.html" },
+  { label: "Copropriétaires", href: "/admin/copros.html" },
   { label: "Cotisations", href: "/admin/cotisations.html" },
   { label: "Dépenses", href: "/admin/depenses.html" },
   { label: "Transparence", href: "/admin/transparence.html" },

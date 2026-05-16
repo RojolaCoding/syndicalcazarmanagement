@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Copropriétaires — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page"><div><span class="loader"></span> Chargement…</div></div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import {
+      collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, orderBy, serverTimestamp,
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import {
+      escapeHtml, generateInvitationCode, normalizePhoneMA, waLink, toast, formatDateFR,
+    } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.ADMIN);
+    if (!session) throw new Error("redirected");
+
+    let copros = [];
+    let invitations = [];
+    let biens = [];
+    let ownerships = [];
+
+    async function loadAll() {
+      const [coprosSnap, invSnap, biensSnap, ownSnap] = await Promise.all([
+        getDocs(query(collection(db, "users"), where("role", "==", "COPRO"))),
+        getDocs(collection(db, "invitations")),
+        getDocs(query(collection(db, "biens"), orderBy("numero"))),
+        getDocs(collection(db, "propertyOwnerships")),
+      ]);
+      copros = coprosSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      invitations = invSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(i => !i.used)
+        .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      biens = biensSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      ownerships = ownSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    function biensOfCopro(uid) {
+      const ids = ownerships.filter(o => o.userId === uid).map(o => o.bienId);
+      return biens.filter(b => ids.includes(b.id)).map(b => b.numero).join(", ") || "—";
+    }
+
+    function render() {
+      document.getElementById("page-content").innerHTML = `
+        <div class="page-header">
+          <div>
+            <div class="page-title">Copropriétaires</div>
+            <div class="page-subtitle">${copros.length} inscrit(s) · ${invitations.length} invitation(s) en attente</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-primary" id="btn-invite">+ Inviter un copropriétaire</button>
+          </div>
+        </div>
+
+        ${invitations.length > 0 ? `
+          <div class="card mb-6">
+            <div class="card-header">
+              <div class="card-title">Invitations en attente</div>
+              <div class="card-description">Codes générés, non encore utilisés</div>
+            </div>
+            <div class="table-wrapper">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Nom</th>
+                    <th>Code</th>
+                    <th>Téléphone</th>
+                    <th>Bien associé</th>
+                    <th>Créé le</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${invitations.map(inv => {
+                    const bienNumeros = (inv.biens || []).map(b => {
+                      const bn = biens.find(x => x.id === b.bienId);
+                      return bn ? bn.numero + (b.quotePart !== 100 ? ` (${b.quotePart}%)` : "") : b.bienId;
+                    }).join(", ") || "—";
+                    return `
+                      <tr>
+                        <td>${escapeHtml(inv.prenom || "")} ${escapeHtml(inv.nom || "")}</td>
+                        <td><code style="background: #f1f5f9; padding: 0.125rem 0.5rem; border-radius: 4px; font-weight: 600;">${escapeHtml(inv.id)}</code></td>
+                        <td class="text-sm">${escapeHtml(inv.telephone || "—")}</td>
+                        <td class="text-sm">${escapeHtml(bienNumeros)}</td>
+                        <td class="text-sm text-muted">${inv.createdAt ? formatDateFR(inv.createdAt.toDate()) : "—"}</td>
+                        <td class="text-right" style="white-space: nowrap;">
+                          <a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="${buildWaLink(inv)}">WhatsApp</a>
+                          <button class="btn btn-ghost btn-sm" data-delete-inv="${inv.id}" style="color: #dc2626;">Supprimer</button>
+                        </td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ` : ""}
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Copropriétaires inscrits</div>
+            <div class="card-description">Comptes actifs avec leurs biens associés</div>
+          </div>
+          ${copros.length === 0 ? `
+            <div class="card-body text-muted text-center">
+              Aucun copropriétaire inscrit pour l'instant. Cliquez sur « Inviter un copropriétaire » pour générer un premier code.
+            </div>
+          ` : `
+            <div class="table-wrapper">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Nom</th>
+                    <th>Email</th>
+                    <th>Téléphone</th>
+                    <th>Bien(s)</th>
+                    <th>Inscrit le</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${copros.map(c => `
+                    <tr>
+                      <td><strong>${escapeHtml(c.prenom || "")} ${escapeHtml(c.nom || "")}</strong></td>
+                      <td class="text-sm">${escapeHtml(c.email || "—")}</td>
+                      <td class="text-sm">${escapeHtml(c.telephone || "—")}</td>
+                      <td class="text-sm">${escapeHtml(biensOfCopro(c.id))}</td>
+                      <td class="text-sm text-muted">${c.createdAt ? formatDateFR(c.createdAt.toDate()) : "—"}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      `;
+
+      document.getElementById("btn-invite")?.addEventListener("click", openInviteModal);
+      document.querySelectorAll("[data-delete-inv]").forEach(el => {
+        el.addEventListener("click", () => deleteInvitation(el.dataset.deleteInv));
+      });
+    }
+
+    function buildWaLink(inv) {
+      const url = window.location.origin + "/inscription.html";
+      const msg =
+`Bonjour ${inv.prenom || ""},
+Vous êtes invité(e) à rejoindre l'application Syndic Alcazar.
+
+🔑 Votre code d'invitation : ${inv.id}
+🔗 ${url}
+
+À votre première connexion, choisissez votre PIN personnel.`;
+      return waLink(inv.telephone, msg);
+    }
+
+    async function deleteInvitation(code) {
+      if (!confirm(`Supprimer l'invitation ${code} ?`)) return;
+      try {
+        await deleteDoc(doc(db, "invitations", code));
+        toast("Invitation supprimée.", "success");
+        await loadAll();
+        render();
+      } catch (err) {
+        toast("Erreur : " + err.message, "error");
+      }
+    }
+
+    function openInviteModal() {
+      const biensLibres = biens.filter(b => {
+        // Biens sans propriétaire actif (pour simplicité)
+        return !ownerships.some(o => o.bienId === b.id);
+      });
+
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.innerHTML = `
+        <div class="modal">
+          <div class="modal-header">
+            <div class="modal-title">Inviter un copropriétaire</div>
+            <button class="modal-close" id="modal-close-btn">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label">Prénom *</label>
+              <input class="form-input" id="inv-prenom" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Nom *</label>
+              <input class="form-input" id="inv-nom" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Téléphone WhatsApp *</label>
+              <input class="form-input" id="inv-tel" placeholder="06 63 40 20 19" required />
+              <p class="form-help">Servira à envoyer le code via WhatsApp.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Bien à associer *</label>
+              <select class="form-select" id="inv-bien" required>
+                <option value="">— Choisir un bien —</option>
+                ${biens.map(b => {
+                  const occupied = ownerships.some(o => o.bienId === b.id);
+                  return `<option value="${b.id}" ${occupied ? "disabled" : ""}>${escapeHtml(b.numero)} ${occupied ? "(déjà attribué)" : ""}</option>`;
+                }).join("")}
+              </select>
+              <p class="form-help">Le copropriétaire pourra suivre les paiements et plaintes de ce bien.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Quote-part (%)</label>
+              <input class="form-input" type="number" id="inv-quote" value="100" min="1" max="100" />
+              <p class="form-help">100 % si propriétaire unique. Réduisez en cas d'indivision.</p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="modal-cancel-btn">Annuler</button>
+            <button class="btn btn-primary" id="modal-save-btn">Générer l'invitation</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      const close = () => overlay.remove();
+      document.getElementById("modal-close-btn").addEventListener("click", close);
+      document.getElementById("modal-cancel-btn").addEventListener("click", close);
+      overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+
+      document.getElementById("modal-save-btn").addEventListener("click", async () => {
+        const prenom = document.getElementById("inv-prenom").value.trim();
+        const nom = document.getElementById("inv-nom").value.trim();
+        const telRaw = document.getElementById("inv-tel").value.trim();
+        const bienId = document.getElementById("inv-bien").value;
+        const quote = parseInt(document.getElementById("inv-quote").value, 10) || 100;
+
+        if (!prenom || !nom || !telRaw || !bienId) {
+          toast("Tous les champs * sont obligatoires.", "error");
+          return;
+        }
+        const tel = normalizePhoneMA(telRaw);
+        if (!tel) {
+          toast("Numéro de téléphone invalide.", "error");
+          return;
+        }
+
+        const saveBtn = document.getElementById("modal-save-btn");
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="loader"></span> Création…';
+
+        try {
+          // Génère un code unique (essaie 5x au cas où collision)
+          let code = null;
+          for (let i = 0; i < 5; i++) {
+            const c = generateInvitationCode();
+            const snap = await getDoc(doc(db, "invitations", c));
+            if (!snap.exists()) { code = c; break; }
+          }
+          if (!code) throw new Error("Impossible de générer un code unique. Réessayez.");
+
+          await setDoc(doc(db, "invitations", code), {
+            prenom, nom, telephone: tel,
+            biens: [{ bienId, quotePart: quote }],
+            used: false,
+            createdAt: serverTimestamp(),
+            usedAt: null,
+            userId: null,
+            createdBy: session.uid,
+          });
+
+          close();
+          await loadAll();
+          render();
+          showInvitationCreated(code, prenom, nom, tel);
+        } catch (err) {
+          console.error(err);
+          toast("Erreur : " + (err.message || "inconnue"), "error");
+          saveBtn.disabled = false;
+          saveBtn.textContent = "Générer l'invitation";
+        }
+      });
+    }
+
+    function showInvitationCreated(code, prenom, nom, tel) {
+      const url = window.location.origin + "/inscription.html";
+      const msg =
+`Bonjour ${prenom},
+Vous êtes invité(e) à rejoindre l'application Syndic Alcazar.
+
+🔑 Votre code d'invitation : ${code}
+🔗 ${url}
+
+À votre première connexion, choisissez votre PIN personnel.`;
+      const link = waLink(tel, msg);
+
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.innerHTML = `
+        <div class="modal">
+          <div class="modal-header">
+            <div class="modal-title">✓ Invitation créée</div>
+            <button class="modal-close" id="ok-close">×</button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3">Voici le code à envoyer à <strong>${escapeHtml(prenom)} ${escapeHtml(nom)}</strong> :</p>
+            <div style="text-align: center; padding: 1rem; background: #f1f5f9; border-radius: 0.5rem; margin-bottom: 1rem;">
+              <div class="text-xs text-muted">CODE D'INVITATION</div>
+              <div style="font-size: 2rem; font-weight: 700; letter-spacing: 0.25rem; font-family: monospace; color: var(--color-primary);">${escapeHtml(code)}</div>
+            </div>
+            <a href="${link}" target="_blank" rel="noopener" class="btn btn-primary btn-block">
+              📱 Envoyer par WhatsApp
+            </a>
+            <p class="text-sm text-muted mt-3">
+              Ce code apparaîtra aussi dans la section « Invitations en attente » ci-dessous, où tu pourras le renvoyer plus tard si besoin.
+            </p>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="ok-cancel">Fermer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const close2 = () => overlay.remove();
+      document.getElementById("ok-close").addEventListener("click", close2);
+      document.getElementById("ok-cancel").addEventListener("click", close2);
+      overlay.addEventListener("click", e => { if (e.target === overlay) close2(); });
+    }
+
+    // Init
+    document.getElementById("app").innerHTML = '<div id="page-content"><div class="loader-page"><div><span class="loader"></span> Chargement…</div></div></div>';
+    mountShell(Role.ADMIN, session.profile);
+    await loadAll();
+    render();
+  </script>
+</body>
+</html>

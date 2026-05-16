@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Biens — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page"><div><span class="loader"></span> Chargement…</div></div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import { collection, getDocs, doc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { formatMAD, escapeHtml, toast } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.ADMIN);
+    if (!session) throw new Error("redirected");
+
+    const TYPE_LABEL = {
+      RESIDENTIEL: "Résidentiel",
+      MAGASIN_RESIDENCE: "Magasin résidence",
+      MAGASIN_CARREFOUR: "Magasin carrefour",
+    };
+
+    let allBiens = [];
+    let currentFilter = "TOUS";
+
+    async function loadBiens() {
+      const snap = await getDocs(query(collection(db, "biens"), orderBy("numero")));
+      allBiens = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    function render() {
+      const filtered = currentFilter === "TOUS"
+        ? allBiens
+        : allBiens.filter(b => b.type === currentFilter);
+
+      const totalTantieme = allBiens.reduce((s, b) => s + (b.tantieme || 0), 0);
+      const totalCotisationMois = allBiens.reduce((s, b) => s + (b.cotisationMensuelle || 0), 0);
+      const tantiemeBadge = totalTantieme === 10000
+        ? `<span class="badge badge-success">${totalTantieme} / 10 000 ✓</span>`
+        : `<span class="badge badge-warning">${totalTantieme} / 10 000 ⚠</span>`;
+
+      document.getElementById("page-content").innerHTML = `
+        <div class="page-header">
+          <div>
+            <div class="page-title">Biens</div>
+            <div class="page-subtitle">${allBiens.length} biens dans la résidence</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 grid-cols-md-3 mb-6">
+          <div class="kpi">
+            <div class="kpi-label">Total biens</div>
+            <div class="kpi-value">${allBiens.length}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Total tantièmes</div>
+            <div class="kpi-value">${totalTantieme.toLocaleString("fr-FR")}</div>
+            <div class="kpi-trend">${tantiemeBadge}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Cotisation mensuelle attendue</div>
+            <div class="kpi-value">${formatMAD(totalCotisationMois)}</div>
+          </div>
+        </div>
+
+        <div class="filters">
+          ${["TOUS", "RESIDENTIEL", "MAGASIN_RESIDENCE", "MAGASIN_CARREFOUR"].map(t => `
+            <button class="filter-chip ${currentFilter === t ? "active" : ""}" data-filter="${t}">
+              ${t === "TOUS" ? "Tous" : TYPE_LABEL[t]}
+              <span style="opacity: 0.7;"> (${
+                t === "TOUS" ? allBiens.length : allBiens.filter(b => b.type === t).length
+              })</span>
+            </button>
+          `).join("")}
+        </div>
+
+        <div class="card">
+          <div class="table-wrapper">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Numéro</th>
+                  <th>Type</th>
+                  <th>Étage</th>
+                  <th class="text-right">Tantième</th>
+                  <th class="text-right">Cotisation/mois</th>
+                  <th>Statut</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(b => `
+                  <tr>
+                    <td><strong>${escapeHtml(b.numero)}</strong></td>
+                    <td><span class="text-sm text-muted">${TYPE_LABEL[b.type] || b.type}</span></td>
+                    <td class="text-sm">${escapeHtml(b.etage || "—")}</td>
+                    <td class="text-right">${(b.tantieme || 0).toLocaleString("fr-FR")}</td>
+                    <td class="text-right">${formatMAD(b.cotisationMensuelle || 0)}</td>
+                    <td>
+                      ${b.statut === "OCCUPE"
+                        ? '<span class="badge badge-success">Occupé</span>'
+                        : '<span class="badge badge-neutral">Vacant</span>'}
+                    </td>
+                    <td class="text-right">
+                      <button class="btn btn-ghost btn-sm" data-edit="${b.id}">Éditer</button>
+                    </td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      // Wire filters
+      document.querySelectorAll("[data-filter]").forEach(el => {
+        el.addEventListener("click", () => {
+          currentFilter = el.dataset.filter;
+          render();
+        });
+      });
+      // Wire edit buttons
+      document.querySelectorAll("[data-edit]").forEach(el => {
+        el.addEventListener("click", () => openEditModal(el.dataset.edit));
+      });
+    }
+
+    function openEditModal(bienId) {
+      const b = allBiens.find(x => x.id === bienId);
+      if (!b) return;
+
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.innerHTML = `
+        <div class="modal">
+          <div class="modal-header">
+            <div class="modal-title">Éditer ${escapeHtml(b.numero)}</div>
+            <button class="modal-close" id="modal-close-btn">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label">Numéro</label>
+              <input class="form-input" id="edit-numero" value="${escapeHtml(b.numero)}" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Type</label>
+              <select class="form-select" id="edit-type">
+                <option value="RESIDENTIEL" ${b.type === "RESIDENTIEL" ? "selected" : ""}>Résidentiel</option>
+                <option value="MAGASIN_RESIDENCE" ${b.type === "MAGASIN_RESIDENCE" ? "selected" : ""}>Magasin résidence</option>
+                <option value="MAGASIN_CARREFOUR" ${b.type === "MAGASIN_CARREFOUR" ? "selected" : ""}>Magasin carrefour</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Étage</label>
+              <input class="form-input" id="edit-etage" value="${escapeHtml(b.etage || "")}" placeholder="ex: 3, RDC, sous-sol" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Surface (m²)</label>
+              <input class="form-input" type="number" step="0.1" id="edit-surface" value="${b.surfaceM2 || ""}" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tantième (base 10 000)</label>
+              <input class="form-input" type="number" id="edit-tantieme" value="${b.tantieme || 0}" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Cotisation mensuelle (DH)</label>
+              <input class="form-input" type="number" step="0.01" id="edit-cotisation" value="${b.cotisationMensuelle || 0}" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Statut</label>
+              <select class="form-select" id="edit-statut">
+                <option value="OCCUPE" ${b.statut === "OCCUPE" ? "selected" : ""}>Occupé</option>
+                <option value="VACANT" ${b.statut === "VACANT" ? "selected" : ""}>Vacant</option>
+              </select>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="modal-cancel-btn">Annuler</button>
+            <button class="btn btn-primary" id="modal-save-btn">Enregistrer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      const close = () => overlay.remove();
+      document.getElementById("modal-close-btn").addEventListener("click", close);
+      document.getElementById("modal-cancel-btn").addEventListener("click", close);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+      document.getElementById("modal-save-btn").addEventListener("click", async () => {
+        const saveBtn = document.getElementById("modal-save-btn");
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="loader"></span> Enregistrement…';
+        try {
+          const updates = {
+            numero: document.getElementById("edit-numero").value.trim(),
+            type: document.getElementById("edit-type").value,
+            etage: document.getElementById("edit-etage").value.trim() || null,
+            surfaceM2: parseFloat(document.getElementById("edit-surface").value) || null,
+            tantieme: parseInt(document.getElementById("edit-tantieme").value, 10),
+            cotisationMensuelle: parseFloat(document.getElementById("edit-cotisation").value),
+            statut: document.getElementById("edit-statut").value,
+          };
+          await updateDoc(doc(db, "biens", bienId), updates);
+          // Maj locale
+          Object.assign(b, updates);
+          close();
+          render();
+          toast("Bien mis à jour.", "success");
+        } catch (err) {
+          console.error(err);
+          toast("Erreur : " + (err.message || "inconnue"), "error");
+          saveBtn.disabled = false;
+          saveBtn.textContent = "Enregistrer";
+        }
+      });
+    }
+
+    // Mount shell, puis charge data et render
+    document.getElementById("app").innerHTML = '<div id="page-content"><div class="loader-page"><div><span class="loader"></span> Chargement des biens…</div></div></div>';
+    mountShell(Role.ADMIN, session.profile);
+
+    await loadBiens();
+    render();
+  </script>
+</body>
+</html>
