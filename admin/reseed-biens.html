@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Reseed biens — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page"><div><span class="loader"></span> Chargement…</div></div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import {
+      collection, getDocs, doc, writeBatch, serverTimestamp, deleteDoc, query, where,
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { toast } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.ADMIN);
+    if (!session) throw new Error("redirected");
+
+    // ─────────────────────────────────────────────────────────
+    // DONNÉES RÉELLES — transcrites depuis le tableau de Saad
+    // ─────────────────────────────────────────────────────────
+    // Bâtiment A : 17 appartements (A-5 = placeholder à compléter via /admin/biens.html)
+    const buildingA = [
+      { num: 1, etage: "1", typeLogement: "F2", hab: 39, cou: 3, tot: 42, pon: 40.5 },
+      { num: 2, etage: "1", typeLogement: "F3", hab: 75, cou: 11, tot: 86, pon: 80.5 },
+      { num: 3, etage: "1", typeLogement: "F4", hab: 103, cou: 13, tot: 116, pon: 109.5 },
+      { num: 4, etage: "1", typeLogement: "F2", hab: 33, cou: 8, tot: 41, pon: 37 },
+      { num: 5, etage: "1", typeLogement: null, hab: 0, cou: 0, tot: 0, pon: 0, incomplet: true },
+      { num: 6, etage: "1", typeLogement: "F3", hab: 75, cou: 17, tot: 92, pon: 83.5 },
+      { num: 7, etage: "2", typeLogement: "F2", hab: 39, cou: 3, tot: 42, pon: 40.5 },
+      { num: 8, etage: "2", typeLogement: "F3", hab: 75, cou: 11, tot: 86, pon: 80.5 },
+      { num: 9, etage: "2", typeLogement: "F4", hab: 103, cou: 13, tot: 116, pon: 109.5 },
+      { num: 10, etage: "2", typeLogement: "F2", hab: 33, cou: 0, tot: 33, pon: 33 },
+      { num: 11, etage: "2", typeLogement: "F3", hab: 65, cou: 0, tot: 65, pon: 65 },
+      { num: 12, etage: "2", typeLogement: "F3", hab: 74, cou: 7, tot: 81, pon: 77.5 },
+      { num: 13, etage: "3", typeLogement: "F2", hab: 39, cou: 3, tot: 42, pon: 40.5 },
+      { num: 14, etage: "3", typeLogement: "F3", hab: 75, cou: 11, tot: 86, pon: 80.5 },
+      { num: 15, etage: "3", typeLogement: "F4", hab: 106, cou: 14, tot: 120, pon: 113 },
+      { num: 16, etage: "3", typeLogement: "F4", hab: 88, cou: 4, tot: 92, pon: 90 },
+      { num: 17, etage: "3", typeLogement: "F3", hab: 71, cou: 10, tot: 81, pon: 76 },
+    ];
+
+    // Bâtiment B : 15 appartements (structure répétée sur 3 étages)
+    const buildingB = [
+      { num: 1, etage: "1", typeLogement: "F3", hab: 76, cou: 9, tot: 85, pon: 80.5 },
+      { num: 2, etage: "1", typeLogement: "F2", hab: 53, cou: 5, tot: 58, pon: 55.5 },
+      { num: 3, etage: "1", typeLogement: "F4", hab: 92, cou: 10, tot: 102, pon: 97 },
+      { num: 4, etage: "1", typeLogement: "F4", hab: 91, cou: 8, tot: 99, pon: 95 },
+      { num: 5, etage: "1", typeLogement: "F3", hab: 70, cou: 11, tot: 81, pon: 75.5 },
+      { num: 6, etage: "2", typeLogement: "F3", hab: 76, cou: 9, tot: 85, pon: 80.5 },
+      { num: 7, etage: "2", typeLogement: "F2", hab: 53, cou: 5, tot: 58, pon: 55.5 },
+      { num: 8, etage: "2", typeLogement: "F4", hab: 92, cou: 10, tot: 102, pon: 97 },
+      { num: 9, etage: "2", typeLogement: "F4", hab: 91, cou: 8, tot: 99, pon: 95 },
+      { num: 10, etage: "2", typeLogement: "F3", hab: 70, cou: 11, tot: 81, pon: 75.5 },
+      { num: 11, etage: "3", typeLogement: "F3", hab: 76, cou: 9, tot: 85, pon: 80.5 },
+      { num: 12, etage: "3", typeLogement: "F2", hab: 53, cou: 5, tot: 58, pon: 55.5 },
+      { num: 13, etage: "3", typeLogement: "F4", hab: 92, cou: 10, tot: 102, pon: 97 },
+      { num: 14, etage: "3", typeLogement: "F4", hab: 91, cou: 8, tot: 99, pon: 95 },
+      { num: 15, etage: "3", typeLogement: "F3", hab: 70, cou: 11, tot: 81, pon: 75.5 },
+    ];
+
+    // Bureaux : 7 unités au RDC
+    const bureaux = [
+      { num: 1, hab: 60, cou: 6, tot: 66, pon: 63 },
+      { num: 2, hab: 52, cou: 25, tot: 77, pon: 64.5 },
+      { num: 3, hab: 66, cou: 24, tot: 90, pon: 78 },
+      { num: 4, hab: 70, cou: 23, tot: 93, pon: 81.5 },
+      { num: 5, hab: 72, cou: 4, tot: 76, pon: 74 },
+      { num: 6, hab: 36, cou: 4, tot: 40, pon: 38 },
+      { num: 7, hab: 40, cou: 4, tot: 44, pon: 42 },
+    ];
+
+    // Magasins : 8 unités au RDC. MG-1 à 4 = face résidence, MG-5 à 8 = face carrefour
+    const magasins = [
+      { num: 1, face: "RESIDENCE", hab: 37, cou: 0, tot: 37, pon: 37 },
+      { num: 2, face: "RESIDENCE", hab: 31, cou: 0, tot: 31, pon: 31 },
+      { num: 3, face: "RESIDENCE", hab: 42, cou: 0, tot: 42, pon: 42 },
+      { num: 4, face: "RESIDENCE", hab: 53, cou: 0, tot: 53, pon: 53 },
+      { num: 5, face: "CARREFOUR", hab: 34, cou: 0, tot: 34, pon: 34 },
+      { num: 6, face: "CARREFOUR", hab: 33, cou: 0, tot: 33, pon: 33 },
+      { num: 7, face: "CARREFOUR", hab: 50, cou: 0, tot: 50, pon: 50 },
+      { num: 8, face: "CARREFOUR", hab: 85, cou: 0, tot: 85, pon: 85 },
+    ];
+
+    function buildAllBiens() {
+      const all = [];
+
+      buildingA.forEach(b => all.push({
+        id: `A-${b.num}`,
+        numero: `A-${b.num}`,
+        displayName: `Appartement A-${b.num}`,
+        categorie: "A",
+        type: "APPARTEMENT",
+        typeLogement: b.typeLogement,
+        face: null,
+        etage: b.etage,
+        surfaceHabitable: b.hab,
+        surfaceCouverte: b.cou,
+        surfaceTotale: b.tot,
+        surfacePonderee: b.pon,
+        incomplet: b.incomplet || false,
+      }));
+
+      buildingB.forEach(b => all.push({
+        id: `B-${b.num}`,
+        numero: `B-${b.num}`,
+        displayName: `Appartement B-${b.num}`,
+        categorie: "B",
+        type: "APPARTEMENT",
+        typeLogement: b.typeLogement,
+        face: null,
+        etage: b.etage,
+        surfaceHabitable: b.hab,
+        surfaceCouverte: b.cou,
+        surfaceTotale: b.tot,
+        surfacePonderee: b.pon,
+        incomplet: false,
+      }));
+
+      bureaux.forEach(b => all.push({
+        id: `BR-${b.num}`,
+        numero: `BR-${b.num}`,
+        displayName: `Bureau ${b.num}`,
+        categorie: "BR",
+        type: "BUREAU",
+        typeLogement: null,
+        face: null,
+        etage: "RDC",
+        surfaceHabitable: b.hab,
+        surfaceCouverte: b.cou,
+        surfaceTotale: b.tot,
+        surfacePonderee: b.pon,
+        incomplet: false,
+      }));
+
+      magasins.forEach(b => all.push({
+        id: `MG-${b.num}`,
+        numero: `MG-${b.num}`,
+        displayName: `Magasin ${b.num} (LC${b.num})`,
+        categorie: "MG",
+        type: "MAGASIN",
+        typeLogement: null,
+        face: b.face,
+        etage: "RDC",
+        surfaceHabitable: b.hab,
+        surfaceCouverte: b.cou,
+        surfaceTotale: b.tot,
+        surfacePonderee: b.pon,
+        incomplet: false,
+      }));
+
+      // Tantième : proportionnel à la surface pondérée, base 10 000
+      const totalPon = all.reduce((s, b) => s + b.surfacePonderee, 0);
+      all.forEach(b => {
+        b.tantieme = totalPon > 0 ? Math.round((b.surfacePonderee / totalPon) * 10000) : 0;
+      });
+      // Ajustement d'arrondi : on cale la différence sur le plus gros bien
+      const sumT = all.reduce((s, b) => s + b.tantieme, 0);
+      const diff = 10000 - sumT;
+      if (diff !== 0) {
+        const biggest = all.reduce((a, b) => a.tantieme > b.tantieme ? a : b);
+        biggest.tantieme += diff;
+      }
+
+      // Cotisation : 400 DH pour tout le monde sauf magasins face carrefour (350 DH)
+      all.forEach(b => {
+        b.cotisationMensuelle = (b.type === "MAGASIN" && b.face === "CARREFOUR") ? 350 : 400;
+      });
+
+      return all;
+    }
+
+    function preview(biens) {
+      const totalPon = biens.reduce((s, b) => s + b.surfacePonderee, 0);
+      const totalTantieme = biens.reduce((s, b) => s + b.tantieme, 0);
+      const totalCotisationMois = biens.reduce((s, b) => s + b.cotisationMensuelle, 0);
+      return { totalPon, totalTantieme, totalCotisationMois };
+    }
+
+    async function doReseed() {
+      const btn = document.getElementById("btn-confirm");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Reseed en cours…';
+
+      const log = document.getElementById("log");
+      const append = (msg) => { log.innerHTML += `<div>• ${msg}</div>`; log.scrollTop = log.scrollHeight; };
+
+      try {
+        // 1. Supprime les biens existants
+        append("Lecture des biens existants…");
+        const existingSnap = await getDocs(collection(db, "biens"));
+        const toDelete = existingSnap.docs;
+        append(`Suppression de ${toDelete.length} bien(s) existant(s)…`);
+        for (let i = 0; i < toDelete.length; i += 400) {
+          const batch = writeBatch(db);
+          toDelete.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+          await batch.commit();
+        }
+
+        // 2. Supprime les propertyOwnerships orphelines (par sécurité)
+        append("Suppression des propertyOwnerships orphelines…");
+        const ownSnap = await getDocs(collection(db, "propertyOwnerships"));
+        if (!ownSnap.empty) {
+          const batch2 = writeBatch(db);
+          ownSnap.docs.forEach(d => batch2.delete(d.ref));
+          await batch2.commit();
+          append(`${ownSnap.docs.length} propertyOwnership(s) supprimée(s).`);
+        } else {
+          append("Aucune propertyOwnership à supprimer.");
+        }
+
+        // 3. Crée les nouveaux biens
+        const biens = buildAllBiens();
+        append(`Création de ${biens.length} biens avec les vraies données…`);
+        for (let i = 0; i < biens.length; i += 400) {
+          const batch = writeBatch(db);
+          biens.slice(i, i + 400).forEach(b => {
+            batch.set(doc(db, "biens", b.id), { ...b, createdAt: serverTimestamp() });
+          });
+          await batch.commit();
+        }
+
+        const stats = preview(biens);
+        append(`✅ Reseed terminé.`);
+        append(`Total pondérée : ${stats.totalPon.toFixed(1)} m²`);
+        append(`Total tantièmes : ${stats.totalTantieme} / 10 000`);
+        append(`Cotisation mensuelle attendue : ${stats.totalCotisationMois.toLocaleString("fr-FR")} DH`);
+
+        document.getElementById("after-reseed").classList.remove("hidden");
+      } catch (err) {
+        console.error(err);
+        append(`❌ Erreur : ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = "Réessayer";
+      }
+    }
+
+    function render() {
+      const previewBiens = buildAllBiens();
+      const stats = preview(previewBiens);
+
+      document.getElementById("page-content").innerHTML = `
+        <h1 class="mb-1">Reseed des biens</h1>
+        <p class="text-muted text-sm mb-6">
+          Remplace les biens actuels par les 47 vrais biens de la résidence Alcazar
+          (17 appartements A + 15 appartements B + 7 bureaux + 8 magasins).
+        </p>
+
+        <div class="alert alert-warning">
+          ⚠️ <strong>Action destructive.</strong> Cela va supprimer tous les biens
+          existants dans Firestore et les recréer avec les vraies données. Les
+          propriétés copro-bien existantes (propertyOwnerships) seront aussi
+          supprimées (mais comme aucun copro n'est encore inscrit, c'est sans risque).
+        </div>
+
+        <div class="card mb-4">
+          <div class="card-header">
+            <div class="card-title">Aperçu de ce qui va être créé</div>
+          </div>
+          <div class="card-body">
+            <div class="grid grid-cols-1 grid-cols-md-3">
+              <div class="kpi">
+                <div class="kpi-label">Total biens</div>
+                <div class="kpi-value">${previewBiens.length}</div>
+                <div class="kpi-trend">17 A + 15 B + 7 BR + 8 MG</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi-label">Total tantièmes</div>
+                <div class="kpi-value">${stats.totalTantieme} / 10 000</div>
+                <div class="kpi-trend">Pondéré sur ${stats.totalPon.toFixed(1)} m²</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi-label">Cotisation mensuelle</div>
+                <div class="kpi-value">${stats.totalCotisationMois.toLocaleString("fr-FR")} DH</div>
+                <div class="kpi-trend">42 × 400 + 4 × 350 (incl. 1 placeholder A-5)</div>
+              </div>
+            </div>
+            <p class="text-sm text-muted mt-4">
+              <strong>Note :</strong> A-5 est créé en mode placeholder (surfaces à 0, tantième 0).
+              Tu pourras éditer ses vraies valeurs via /admin/biens.html dès que tu auras les chiffres,
+              puis cliquer sur « Recalculer les tantièmes » pour réintégrer A-5 dans la répartition.
+            </p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mb-4">
+          <button class="btn btn-danger btn-lg" id="btn-confirm">
+            Effacer et recréer les 47 biens
+          </button>
+          <a href="/admin/dashboard.html" class="btn btn-secondary btn-lg">Annuler</a>
+        </div>
+
+        <div class="card hidden" id="log-card">
+          <div class="card-header"><div class="card-title">Journal</div></div>
+          <div class="card-body">
+            <div id="log" style="font-family: monospace; font-size: 0.875rem; max-height: 16rem; overflow-y: auto;"></div>
+          </div>
+        </div>
+
+        <div class="alert alert-success mt-4 hidden" id="after-reseed">
+          ✅ Reseed terminé. <a href="/admin/biens.html">Aller voir les biens →</a>
+        </div>
+      `;
+
+      document.getElementById("btn-confirm").addEventListener("click", () => {
+        if (!confirm("Confirmer : supprimer les biens actuels et recréer avec les vraies données ?")) return;
+        document.getElementById("log-card").classList.remove("hidden");
+        doReseed();
+      });
+    }
+
+    document.getElementById("app").innerHTML = '<div id="page-content"></div>';
+    mountShell(Role.ADMIN, session.profile);
+    render();
+  </script>
+</body>
+</html>

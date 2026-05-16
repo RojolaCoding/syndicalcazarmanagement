@@ -16,16 +16,17 @@
     import { requireAuth, Role } from "/assets/js/auth.js";
     import { mountShell } from "/assets/js/shell.js";
     import { db } from "/assets/js/firebase-init.js";
-    import { collection, getDocs, doc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { collection, getDocs, doc, updateDoc, writeBatch, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
     import { formatMAD, escapeHtml, toast } from "/assets/js/utils.js";
 
     const session = await requireAuth(Role.ADMIN);
     if (!session) throw new Error("redirected");
 
-    const TYPE_LABEL = {
-      RESIDENTIEL: "Résidentiel",
-      MAGASIN_RESIDENCE: "Magasin résidence",
-      MAGASIN_CARREFOUR: "Magasin carrefour",
+    const CATEGORIE_LABEL = {
+      A: "Bâtiment A",
+      B: "Bâtiment B",
+      BR: "Bureaux",
+      MG: "Magasins",
     };
 
     let allBiens = [];
@@ -34,31 +35,69 @@
     async function loadBiens() {
       const snap = await getDocs(query(collection(db, "biens"), orderBy("numero")));
       allBiens = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Tri stable par catégorie puis numéro
+      allBiens.sort((a, b) => {
+        const order = { A: 1, B: 2, BR: 3, MG: 4 };
+        const ca = order[a.categorie] || 99;
+        const cb = order[b.categorie] || 99;
+        if (ca !== cb) return ca - cb;
+        const na = parseInt(a.numero.split("-")[1] || "0", 10);
+        const nb = parseInt(b.numero.split("-")[1] || "0", 10);
+        return na - nb;
+      });
+    }
+
+    function describeType(b) {
+      if (b.type === "APPARTEMENT") {
+        return `${b.typeLogement || "?"} · étage ${b.etage}`;
+      }
+      if (b.type === "BUREAU") return "Bureau · RDC";
+      if (b.type === "MAGASIN") {
+        return b.face === "CARREFOUR" ? "Magasin face carrefour" : "Magasin face résidence";
+      }
+      return b.type || "—";
     }
 
     function render() {
       const filtered = currentFilter === "TOUS"
         ? allBiens
-        : allBiens.filter(b => b.type === currentFilter);
+        : allBiens.filter(b => b.categorie === currentFilter);
 
       const totalTantieme = allBiens.reduce((s, b) => s + (b.tantieme || 0), 0);
       const totalCotisationMois = allBiens.reduce((s, b) => s + (b.cotisationMensuelle || 0), 0);
+      const totalPon = allBiens.reduce((s, b) => s + (b.surfacePonderee || 0), 0);
+      const incomplets = allBiens.filter(b => b.incomplet).length;
+
       const tantiemeBadge = totalTantieme === 10000
-        ? `<span class="badge badge-success">${totalTantieme} / 10 000 ✓</span>`
-        : `<span class="badge badge-warning">${totalTantieme} / 10 000 ⚠</span>`;
+        ? `<span class="badge badge-success">${totalTantieme.toLocaleString("fr-FR")} / 10 000 ✓</span>`
+        : `<span class="badge badge-warning">${totalTantieme.toLocaleString("fr-FR")} / 10 000 ⚠</span>`;
 
       document.getElementById("page-content").innerHTML = `
         <div class="page-header">
           <div>
             <div class="page-title">Biens</div>
-            <div class="page-subtitle">${allBiens.length} biens dans la résidence</div>
+            <div class="page-subtitle">${allBiens.length} biens dans la résidence Alcazar</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary" id="btn-recompute">Recalculer tantièmes</button>
           </div>
         </div>
 
-        <div class="grid grid-cols-1 grid-cols-md-3 mb-6">
+        ${incomplets > 0 ? `
+          <div class="alert alert-warning">
+            ⚠️ ${incomplets} bien(s) marqué(s) comme incomplet(s) — surfaces à compléter
+            (cliquez sur « Éditer »). Une fois fait, recliquez « Recalculer tantièmes ».
+          </div>
+        ` : ""}
+
+        <div class="grid grid-cols-1 grid-cols-md-4 mb-6">
           <div class="kpi">
             <div class="kpi-label">Total biens</div>
             <div class="kpi-value">${allBiens.length}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Surface pondérée</div>
+            <div class="kpi-value">${totalPon.toFixed(1)} m²</div>
           </div>
           <div class="kpi">
             <div class="kpi-label">Total tantièmes</div>
@@ -72,11 +111,11 @@
         </div>
 
         <div class="filters">
-          ${["TOUS", "RESIDENTIEL", "MAGASIN_RESIDENCE", "MAGASIN_CARREFOUR"].map(t => `
+          ${["TOUS", "A", "B", "BR", "MG"].map(t => `
             <button class="filter-chip ${currentFilter === t ? "active" : ""}" data-filter="${t}">
-              ${t === "TOUS" ? "Tous" : TYPE_LABEL[t]}
+              ${t === "TOUS" ? "Tous" : CATEGORIE_LABEL[t]}
               <span style="opacity: 0.7;"> (${
-                t === "TOUS" ? allBiens.length : allBiens.filter(b => b.type === t).length
+                t === "TOUS" ? allBiens.length : allBiens.filter(b => b.categorie === t).length
               })</span>
             </button>
           `).join("")}
@@ -87,27 +126,33 @@
             <table class="table">
               <thead>
                 <tr>
-                  <th>Numéro</th>
+                  <th>Bien</th>
                   <th>Type</th>
-                  <th>Étage</th>
+                  <th class="text-right">Surface hab.</th>
+                  <th class="text-right">Pondérée</th>
                   <th class="text-right">Tantième</th>
-                  <th class="text-right">Cotisation/mois</th>
+                  <th class="text-right">Cotisation</th>
                   <th>Statut</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 ${filtered.map(b => `
-                  <tr>
-                    <td><strong>${escapeHtml(b.numero)}</strong></td>
-                    <td><span class="text-sm text-muted">${TYPE_LABEL[b.type] || b.type}</span></td>
-                    <td class="text-sm">${escapeHtml(b.etage || "—")}</td>
+                  <tr ${b.incomplet ? 'style="background:#fef9c3;"' : ""}>
+                    <td>
+                      <div><strong>${escapeHtml(b.numero)}</strong></div>
+                      <div class="text-xs text-muted">${escapeHtml(b.displayName || "")}</div>
+                    </td>
+                    <td class="text-sm">${escapeHtml(describeType(b))}</td>
+                    <td class="text-right">${b.surfaceHabitable || 0} m²</td>
+                    <td class="text-right text-sm text-muted">${(b.surfacePonderee || 0).toFixed(1)} m²</td>
                     <td class="text-right">${(b.tantieme || 0).toLocaleString("fr-FR")}</td>
                     <td class="text-right">${formatMAD(b.cotisationMensuelle || 0)}</td>
                     <td>
                       ${b.statut === "OCCUPE"
                         ? '<span class="badge badge-success">Occupé</span>'
                         : '<span class="badge badge-neutral">Vacant</span>'}
+                      ${b.incomplet ? '<span class="badge badge-warning" style="margin-left:0.25rem;">incomplet</span>' : ''}
                     </td>
                     <td class="text-right">
                       <button class="btn btn-ghost btn-sm" data-edit="${b.id}">Éditer</button>
@@ -120,66 +165,107 @@
         </div>
       `;
 
-      // Wire filters
       document.querySelectorAll("[data-filter]").forEach(el => {
-        el.addEventListener("click", () => {
-          currentFilter = el.dataset.filter;
-          render();
-        });
+        el.addEventListener("click", () => { currentFilter = el.dataset.filter; render(); });
       });
-      // Wire edit buttons
       document.querySelectorAll("[data-edit]").forEach(el => {
         el.addEventListener("click", () => openEditModal(el.dataset.edit));
       });
+      document.getElementById("btn-recompute").addEventListener("click", recomputeTantiemes);
     }
 
     function openEditModal(bienId) {
       const b = allBiens.find(x => x.id === bienId);
       if (!b) return;
 
+      const isApp = b.type === "APPARTEMENT";
+      const isMag = b.type === "MAGASIN";
+
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay";
       overlay.innerHTML = `
         <div class="modal">
           <div class="modal-header">
-            <div class="modal-title">Éditer ${escapeHtml(b.numero)}</div>
+            <div class="modal-title">Éditer ${escapeHtml(b.displayName || b.numero)}</div>
             <button class="modal-close" id="modal-close-btn">×</button>
           </div>
           <div class="modal-body">
-            <div class="form-group">
-              <label class="form-label">Numéro</label>
-              <input class="form-input" id="edit-numero" value="${escapeHtml(b.numero)}" required />
+            <div class="grid grid-cols-2">
+              <div class="form-group">
+                <label class="form-label">Étage</label>
+                <select class="form-select" id="edit-etage">
+                  ${["RDC", "1", "2", "3", "4", "5"].map(e =>
+                    `<option value="${e}" ${b.etage === e ? "selected" : ""}>${e}</option>`
+                  ).join("")}
+                </select>
+              </div>
+              ${isApp ? `
+                <div class="form-group">
+                  <label class="form-label">Type logement</label>
+                  <select class="form-select" id="edit-typelog">
+                    ${["", "F1", "F2", "F3", "F4", "F5"].map(t =>
+                      `<option value="${t}" ${b.typeLogement === t ? "selected" : ""}>${t || "—"}</option>`
+                    ).join("")}
+                  </select>
+                </div>
+              ` : ""}
+              ${isMag ? `
+                <div class="form-group">
+                  <label class="form-label">Face</label>
+                  <select class="form-select" id="edit-face">
+                    <option value="RESIDENCE" ${b.face === "RESIDENCE" ? "selected" : ""}>Face résidence</option>
+                    <option value="CARREFOUR" ${b.face === "CARREFOUR" ? "selected" : ""}>Face carrefour</option>
+                  </select>
+                </div>
+              ` : ""}
             </div>
-            <div class="form-group">
-              <label class="form-label">Type</label>
-              <select class="form-select" id="edit-type">
-                <option value="RESIDENTIEL" ${b.type === "RESIDENTIEL" ? "selected" : ""}>Résidentiel</option>
-                <option value="MAGASIN_RESIDENCE" ${b.type === "MAGASIN_RESIDENCE" ? "selected" : ""}>Magasin résidence</option>
-                <option value="MAGASIN_CARREFOUR" ${b.type === "MAGASIN_CARREFOUR" ? "selected" : ""}>Magasin carrefour</option>
-              </select>
+
+            <div class="grid grid-cols-2">
+              <div class="form-group">
+                <label class="form-label">Surface habitable (m²)</label>
+                <input class="form-input" type="number" step="0.1" id="edit-hab" value="${b.surfaceHabitable || 0}" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Surface couverte (m²)</label>
+                <input class="form-input" type="number" step="0.1" id="edit-cou" value="${b.surfaceCouverte || 0}" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Surface totale (m²)</label>
+                <input class="form-input" type="number" step="0.1" id="edit-tot" value="${b.surfaceTotale || 0}" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Surface pondérée (m²)</label>
+                <input class="form-input" type="number" step="0.1" id="edit-pon" value="${b.surfacePonderee || 0}" />
+                <p class="form-help">Base du calcul de tantième (loi 18-00).</p>
+              </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">Étage</label>
-              <input class="form-input" id="edit-etage" value="${escapeHtml(b.etage || "")}" placeholder="ex: 3, RDC, sous-sol" />
+
+            <div class="grid grid-cols-2">
+              <div class="form-group">
+                <label class="form-label">Tantième (sur 10 000)</label>
+                <input class="form-input" type="number" id="edit-tantieme" value="${b.tantieme || 0}" />
+                <p class="form-help">Recalculable globalement via le bouton « Recalculer tantièmes ».</p>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Cotisation mensuelle (DH)</label>
+                <input class="form-input" type="number" step="0.01" id="edit-cotisation" value="${b.cotisationMensuelle || 0}" />
+              </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">Surface (m²)</label>
-              <input class="form-input" type="number" step="0.1" id="edit-surface" value="${b.surfaceM2 || ""}" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Tantième (base 10 000)</label>
-              <input class="form-input" type="number" id="edit-tantieme" value="${b.tantieme || 0}" required />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Cotisation mensuelle (DH)</label>
-              <input class="form-input" type="number" step="0.01" id="edit-cotisation" value="${b.cotisationMensuelle || 0}" required />
-            </div>
+
             <div class="form-group">
               <label class="form-label">Statut</label>
               <select class="form-select" id="edit-statut">
                 <option value="OCCUPE" ${b.statut === "OCCUPE" ? "selected" : ""}>Occupé</option>
                 <option value="VACANT" ${b.statut === "VACANT" ? "selected" : ""}>Vacant</option>
               </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <input type="checkbox" id="edit-incomplet" ${b.incomplet ? "checked" : ""} />
+                Marquer comme incomplet
+              </label>
+              <p class="form-help">Cocher si les données ne sont pas encore fiables.</p>
             </div>
           </div>
           <div class="modal-footer">
@@ -193,7 +279,7 @@
       const close = () => overlay.remove();
       document.getElementById("modal-close-btn").addEventListener("click", close);
       document.getElementById("modal-cancel-btn").addEventListener("click", close);
-      overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+      overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
 
       document.getElementById("modal-save-btn").addEventListener("click", async () => {
         const saveBtn = document.getElementById("modal-save-btn");
@@ -201,33 +287,71 @@
         saveBtn.innerHTML = '<span class="loader"></span> Enregistrement…';
         try {
           const updates = {
-            numero: document.getElementById("edit-numero").value.trim(),
-            type: document.getElementById("edit-type").value,
-            etage: document.getElementById("edit-etage").value.trim() || null,
-            surfaceM2: parseFloat(document.getElementById("edit-surface").value) || null,
-            tantieme: parseInt(document.getElementById("edit-tantieme").value, 10),
-            cotisationMensuelle: parseFloat(document.getElementById("edit-cotisation").value),
+            etage: document.getElementById("edit-etage").value,
+            surfaceHabitable: parseFloat(document.getElementById("edit-hab").value) || 0,
+            surfaceCouverte: parseFloat(document.getElementById("edit-cou").value) || 0,
+            surfaceTotale: parseFloat(document.getElementById("edit-tot").value) || 0,
+            surfacePonderee: parseFloat(document.getElementById("edit-pon").value) || 0,
+            tantieme: parseInt(document.getElementById("edit-tantieme").value, 10) || 0,
+            cotisationMensuelle: parseFloat(document.getElementById("edit-cotisation").value) || 0,
             statut: document.getElementById("edit-statut").value,
+            incomplet: document.getElementById("edit-incomplet").checked,
           };
+          if (isApp) updates.typeLogement = document.getElementById("edit-typelog").value || null;
+          if (isMag) updates.face = document.getElementById("edit-face").value;
           await updateDoc(doc(db, "biens", bienId), updates);
-          // Maj locale
           Object.assign(b, updates);
           close();
           render();
           toast("Bien mis à jour.", "success");
         } catch (err) {
           console.error(err);
-          toast("Erreur : " + (err.message || "inconnue"), "error");
+          toast("Erreur : " + err.message, "error");
           saveBtn.disabled = false;
           saveBtn.textContent = "Enregistrer";
         }
       });
     }
 
-    // Mount shell, puis charge data et render
+    async function recomputeTantiemes() {
+      if (!confirm("Recalculer les tantièmes de tous les biens à partir des surfaces pondérées ?")) return;
+      const btn = document.getElementById("btn-recompute");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Calcul…';
+      try {
+        const totalPon = allBiens.reduce((s, b) => s + (b.surfacePonderee || 0), 0);
+        if (totalPon <= 0) throw new Error("Total des surfaces pondérées = 0. Impossible de calculer.");
+
+        const newT = {};
+        allBiens.forEach(b => {
+          newT[b.id] = Math.round(((b.surfacePonderee || 0) / totalPon) * 10000);
+        });
+        // Ajustement d'arrondi
+        const sumT = Object.values(newT).reduce((s, v) => s + v, 0);
+        const diff = 10000 - sumT;
+        if (diff !== 0) {
+          // Cale sur le bien avec le plus gros tantième
+          const biggestId = allBiens.reduce((a, b) => (newT[a.id] || 0) > (newT[b.id] || 0) ? a : b).id;
+          newT[biggestId] += diff;
+        }
+
+        const batch = writeBatch(db);
+        allBiens.forEach(b => {
+          batch.update(doc(db, "biens", b.id), { tantieme: newT[b.id] });
+          b.tantieme = newT[b.id];
+        });
+        await batch.commit();
+        render();
+        toast(`Tantièmes recalculés sur 10 000 (base : ${totalPon.toFixed(1)} m² pondérée).`, "success");
+      } catch (err) {
+        toast(err.message, "error");
+        btn.disabled = false;
+        btn.textContent = "Recalculer tantièmes";
+      }
+    }
+
     document.getElementById("app").innerHTML = '<div id="page-content"><div class="loader-page"><div><span class="loader"></span> Chargement des biens…</div></div></div>';
     mountShell(Role.ADMIN, session.profile);
-
     await loadBiens();
     render();
   </script>
