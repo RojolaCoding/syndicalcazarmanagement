@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Transparence — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page"><div><span class="loader"></span> Chargement…</div></div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import {
+      collection, getDocs, query, orderBy, where,
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { formatMAD, formatDateFR, escapeHtml } from "/assets/js/utils.js";
+
+    const session = await requireAuth(); // copro OU admin
+    if (!session) throw new Error("redirected");
+
+    function currentMonthString() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    }
+    const currentMonth = currentMonthString();
+    const currentYear = new Date().getFullYear().toString();
+
+    function formatPeriodFR(period) {
+      const [y, m] = period.split("-");
+      const months = ["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."];
+      return `${months[parseInt(m,10)-1]} ${y}`;
+    }
+
+    const [biens, cotisations, depenses, charges] = await Promise.all([
+      getDocs(query(collection(db, "biens"), orderBy("numero"))).then(s => s.docs.map(d => ({ id: d.id, ...d.data() }))),
+      getDocs(collection(db, "cotisations")).then(s => s.docs.map(d => ({ id: d.id, ...d.data() }))),
+      getDocs(query(collection(db, "depenses"), orderBy("dateDepense", "desc"))).then(s => s.docs.map(d => ({ id: d.id, ...d.data() }))),
+      getDocs(collection(db, "chargesRecurrentes")).then(s => s.docs.map(d => ({ id: d.id, ...d.data() }))),
+    ]);
+
+    // Tri biens
+    biens.sort((a, b) => {
+      const order = { A: 1, B: 2, BR: 3, LC: 4, MG: 4 };
+      const ca = order[a.categorie] || 99;
+      const cb = order[b.categorie] || 99;
+      if (ca !== cb) return ca - cb;
+      const na = parseInt(a.numero.split("-")[1] || "0", 10);
+      const nb = parseInt(b.numero.split("-")[1] || "0", 10);
+      return na - nb;
+    });
+
+    // ── KPI globaux ─────────────────────────────────────────
+    const cotisMois = cotisations.filter(c => c.periode === currentMonth);
+    const depMois = depenses.filter(d => d.dateDepense && d.dateDepense.startsWith(currentMonth));
+
+    const collecteMois = cotisMois.reduce((s, c) => s + (c.montantPaye || 0), 0);
+    const dueMois = cotisMois.reduce((s, c) => s + (c.montantDu || 0), 0);
+    const depenseMois = depMois.reduce((s, d) => s + (d.montant || 0), 0);
+
+    // Trésorerie estimée = total payé année - total dépensé année
+    const cotisYear = cotisations.filter(c => c.periode && c.periode.startsWith(currentYear));
+    const depYear = depenses.filter(d => d.dateDepense && d.dateDepense.startsWith(currentYear));
+    const totalCollectYear = cotisYear.reduce((s, c) => s + (c.montantPaye || 0), 0);
+    const totalDepYear = depYear.reduce((s, d) => s + (d.montant || 0), 0);
+    const tresorerie = totalCollectYear - totalDepYear;
+
+    // ── Statut paiement par bien (semi-anonyme) ─────────────
+    // On regarde les cotisations YTD (depuis janvier) : si toutes payées → à jour
+    function statusOfBien(bienId) {
+      const cs = cotisYear.filter(c => c.bienId === bienId);
+      if (cs.length === 0) return { text: "Pas de données", cls: "badge-neutral" };
+      const allPaid = cs.every(c => (c.montantPaye || 0) >= (c.montantDu || 0));
+      if (allPaid) return { text: "À jour", cls: "badge-success" };
+      const monthsLate = cs.filter(c => (c.montantPaye || 0) < (c.montantDu || 0)).length;
+      return { text: `En retard (${monthsLate} mois)`, cls: "badge-danger" };
+    }
+
+    // ── Charges récurrentes : attendu vs réel ce mois ────────
+    const chargeStats = charges.map(c => {
+      const realisations = depMois.filter(d => d.chargeRecurrenteId === c.id);
+      const reel = realisations.reduce((s, d) => s + d.montant, 0);
+      const ecart = reel - c.montantMensuelAttendu;
+      return { ...c, reel, ecart };
+    });
+
+    // ── Render ──────────────────────────────────────────────
+    const depPubliques = depenses.filter(d => d.visiblePublic !== false);
+
+    document.getElementById("app").innerHTML = `
+      <div id="page-content">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Transparence financière</div>
+            <div class="page-subtitle">Situation de la résidence Alcazar — ${formatPeriodFR(currentMonth)}</div>
+          </div>
+        </div>
+
+        <div class="alert alert-info">
+          ℹ️ Vue publique semi-anonyme : tu vois le statut de paiement de chaque bien
+          (à jour / en retard) sans les noms ni les montants individuels.
+          Les dépenses sont visibles dans leur intégralité avec leurs justificatifs.
+        </div>
+
+        <div class="grid grid-cols-1 grid-cols-md-4 mb-6">
+          <div class="kpi">
+            <div class="kpi-label">Trésorerie estimée (${currentYear})</div>
+            <div class="kpi-value" style="color: ${tresorerie >= 0 ? 'var(--color-primary)' : 'var(--color-danger)'}">${formatMAD(tresorerie)}</div>
+            <div class="kpi-trend">Collecté ${formatMAD(totalCollectYear)} − Dépensé ${formatMAD(totalDepYear)}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Collecté ce mois</div>
+            <div class="kpi-value">${formatMAD(collecteMois)}</div>
+            <div class="kpi-trend">sur ${formatMAD(dueMois)} attendu</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Dépensé ce mois</div>
+            <div class="kpi-value">${formatMAD(depenseMois)}</div>
+            <div class="kpi-trend">${depMois.length} opération(s)</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Biens en règle</div>
+            <div class="kpi-value">${biens.filter(b => statusOfBien(b.id).text === "À jour").length} / ${biens.length}</div>
+          </div>
+        </div>
+
+        <div class="card mb-6">
+          <div class="card-header">
+            <div class="card-title">Charges récurrentes — ${formatPeriodFR(currentMonth)}</div>
+            <div class="card-description">Comparaison entre les montants attendus et réellement dépensés ce mois</div>
+          </div>
+          <div class="table-wrapper">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Charge</th>
+                  <th>Fournisseur</th>
+                  <th class="text-right">Attendu/mois</th>
+                  <th class="text-right">Réel ce mois</th>
+                  <th class="text-right">Écart</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${chargeStats.map(c => `
+                  <tr>
+                    <td><strong>${escapeHtml(c.libelle)}</strong></td>
+                    <td class="text-sm text-muted">${escapeHtml(c.fournisseur || "—")}</td>
+                    <td class="text-right">${formatMAD(c.montantMensuelAttendu)}</td>
+                    <td class="text-right">${formatMAD(c.reel)}</td>
+                    <td class="text-right">
+                      ${c.reel === 0
+                        ? '<span class="badge badge-warning">non réglé</span>'
+                        : Math.abs(c.ecart) < 0.01
+                          ? '<span class="badge badge-success">conforme</span>'
+                          : `<span class="badge ${c.ecart > 0 ? 'badge-danger' : 'badge-success'}">${c.ecart > 0 ? '+' : ''}${formatMAD(c.ecart)}</span>`}
+                    </td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 grid-cols-md-2 mb-6">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Statut de paiement par bien (anonyme)</div>
+              <div class="card-description">Cotisations ${currentYear}</div>
+            </div>
+            <div class="table-wrapper" style="max-height: 24rem;">
+              <table class="table">
+                <thead>
+                  <tr><th>Bien</th><th>Statut</th></tr>
+                </thead>
+                <tbody>
+                  ${biens.map(b => {
+                    const s = statusOfBien(b.id);
+                    return `
+                      <tr>
+                        <td><strong>${escapeHtml(b.numero)}</strong></td>
+                        <td><span class="badge ${s.cls}">${s.text}</span></td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Dépenses récentes</div>
+              <div class="card-description">${depPubliques.length} dépense(s) publique(s) au total</div>
+            </div>
+            <div class="table-wrapper" style="max-height: 24rem;">
+              <table class="table">
+                <thead>
+                  <tr><th>Date</th><th>Libellé</th><th class="text-right">Montant</th><th>Justif.</th></tr>
+                </thead>
+                <tbody>
+                  ${depPubliques.slice(0, 30).map(d => `
+                    <tr>
+                      <td class="text-sm">${d.dateDepense ? formatDateFR(d.dateDepense) : "—"}</td>
+                      <td>
+                        <div><strong>${escapeHtml(d.libelle)}</strong></div>
+                        <div class="text-xs text-muted">${escapeHtml(d.fournisseur || "")}</div>
+                      </td>
+                      <td class="text-right"><strong>${formatMAD(d.montant)}</strong></td>
+                      <td>${d.justificatifUrl ? `<a href="${escapeHtml(d.justificatifUrl)}" target="_blank" rel="noopener" class="text-sm">📎</a>` : "—"}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    mountShell(session.profile.role, session.profile);
+  </script>
+</body>
+</html>

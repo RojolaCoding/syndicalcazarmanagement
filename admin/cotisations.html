@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Cotisations — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page"><div><span class="loader"></span> Chargement…</div></div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import {
+      collection, getDocs, doc, setDoc, updateDoc, query, where, orderBy, serverTimestamp, writeBatch,
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { formatMAD, formatDateFR, escapeHtml, toast } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.ADMIN);
+    if (!session) throw new Error("redirected");
+
+    let biens = [];
+    let cotisations = []; // pour la période sélectionnée
+    let currentPeriod = currentMonthString(); // "YYYY-MM"
+
+    function currentMonthString() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    }
+
+    function formatPeriodFR(period) {
+      const [y, m] = period.split("-");
+      const months = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+      return `${months[parseInt(m, 10) - 1]} ${y}`;
+    }
+
+    function periodOptions() {
+      const opts = [];
+      const now = new Date();
+      for (let i = -2; i <= 12; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+        opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+      }
+      return opts;
+    }
+
+    async function loadBiens() {
+      const snap = await getDocs(query(collection(db, "biens"), orderBy("numero")));
+      biens = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      biens.sort((a, b) => {
+        const order = { A: 1, B: 2, BR: 3, LC: 4, MG: 4 };
+        const ca = order[a.categorie] || 99;
+        const cb = order[b.categorie] || 99;
+        if (ca !== cb) return ca - cb;
+        const na = parseInt(a.numero.split("-")[1] || "0", 10);
+        const nb = parseInt(b.numero.split("-")[1] || "0", 10);
+        return na - nb;
+      });
+    }
+
+    async function loadCotisationsForPeriod() {
+      const snap = await getDocs(query(collection(db, "cotisations"), where("periode", "==", currentPeriod)));
+      cotisations = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    function findCotisation(bienId) {
+      return cotisations.find(c => c.bienId === bienId);
+    }
+
+    async function generateCotisationsForPeriod() {
+      if (!confirm(`Générer les cotisations pour ${formatPeriodFR(currentPeriod)} ? (un doc par bien manquant)`)) return;
+      const btn = document.getElementById("btn-generate");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Génération…';
+      try {
+        const batch = writeBatch(db);
+        let created = 0;
+        for (const b of biens) {
+          const id = `${b.id}_${currentPeriod}`;
+          if (cotisations.some(c => c.id === id)) continue; // déjà existante
+          batch.set(doc(db, "cotisations", id), {
+            bienId: b.id,
+            periode: currentPeriod,
+            montantDu: b.cotisationMensuelle || 0,
+            montantPaye: 0,
+            datePaiement: null,
+            modePaiement: null,
+            recuNumero: null,
+            notes: null,
+            source: "ACTUEL",
+            createdAt: serverTimestamp(),
+          });
+          created++;
+        }
+        if (created === 0) {
+          toast("Toutes les cotisations existent déjà pour cette période.", "info");
+        } else {
+          await batch.commit();
+          toast(`${created} cotisation(s) générée(s).`, "success");
+          await loadCotisationsForPeriod();
+        }
+        render();
+      } catch (err) {
+        console.error(err);
+        toast("Erreur : " + err.message, "error");
+        btn.disabled = false;
+        btn.textContent = "Générer les cotisations";
+      }
+    }
+
+    function statusOf(c, montantDu) {
+      if (!c) return { text: "Non générée", cls: "badge-neutral" };
+      const due = c.montantDu || montantDu || 0;
+      const paid = c.montantPaye || 0;
+      if (paid <= 0) return { text: "Non payée", cls: "badge-danger" };
+      if (paid < due) return { text: `Partiel (${formatMAD(paid)} / ${formatMAD(due)})`, cls: "badge-warning" };
+      if (paid >= due) return { text: "Payée", cls: "badge-success" };
+    }
+
+    function render() {
+      const totalDu = biens.reduce((s, b) => s + (b.cotisationMensuelle || 0), 0);
+      const totalGen = cotisations.reduce((s, c) => s + (c.montantDu || 0), 0);
+      const totalPaye = cotisations.reduce((s, c) => s + (c.montantPaye || 0), 0);
+      const tauxRecouv = totalGen > 0 ? Math.round((totalPaye / totalGen) * 100) : 0;
+      const nbPayes = cotisations.filter(c => (c.montantPaye || 0) >= (c.montantDu || 0)).length;
+      const nbImpayes = cotisations.length - nbPayes;
+      const nbNonGen = biens.length - cotisations.length;
+
+      document.getElementById("page-content").innerHTML = `
+        <div class="page-header">
+          <div>
+            <div class="page-title">Cotisations</div>
+            <div class="page-subtitle">Suivi mensuel des paiements de chaque bien</div>
+          </div>
+          <div class="page-actions">
+            <select class="form-select" id="period-select" style="width: auto;">
+              ${periodOptions().map(p => `<option value="${p}" ${p === currentPeriod ? "selected" : ""}>${formatPeriodFR(p)}</option>`).join("")}
+            </select>
+            ${nbNonGen > 0 ? `<button class="btn btn-primary" id="btn-generate">Générer ${nbNonGen} cotisation(s)</button>` : ""}
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 grid-cols-md-4 mb-6">
+          <div class="kpi">
+            <div class="kpi-label">Attendu ce mois</div>
+            <div class="kpi-value">${formatMAD(totalDu)}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Collecté ce mois</div>
+            <div class="kpi-value">${formatMAD(totalPaye)}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Taux de recouvrement</div>
+            <div class="kpi-value">${tauxRecouv}%</div>
+            <div class="kpi-trend">${nbPayes} payée(s) / ${nbImpayes} en attente</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Manquant</div>
+            <div class="kpi-value">${formatMAD(totalGen - totalPaye)}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrapper">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Bien</th>
+                  <th class="text-right">Dû</th>
+                  <th>Statut</th>
+                  <th>Date paiement</th>
+                  <th>Mode</th>
+                  <th>N° reçu</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${biens.map(b => {
+                  const c = findCotisation(b.id);
+                  const s = statusOf(c, b.cotisationMensuelle);
+                  return `
+                    <tr ${!c ? 'style="background:#fef9c3"' : ""}>
+                      <td>
+                        <div><strong>${escapeHtml(b.numero)}</strong></div>
+                        <div class="text-xs text-muted">${escapeHtml(b.displayName || "")}</div>
+                      </td>
+                      <td class="text-right">${formatMAD(c?.montantDu ?? b.cotisationMensuelle ?? 0)}</td>
+                      <td><span class="badge ${s.cls}">${s.text}</span></td>
+                      <td class="text-sm">${c?.datePaiement ? formatDateFR(c.datePaiement) : "—"}</td>
+                      <td class="text-sm">${c?.modePaiement || "—"}</td>
+                      <td class="text-sm">${c?.recuNumero || "—"}</td>
+                      <td class="text-right">
+                        ${c
+                          ? `<button class="btn btn-ghost btn-sm" data-pay="${c.id}">${(c.montantPaye || 0) > 0 ? "Modifier" : "Saisir paiement"}</button>`
+                          : '<span class="text-xs text-muted">générer d\'abord</span>'}
+                      </td>
+                    </tr>
+                  `;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      document.getElementById("period-select").addEventListener("change", async (e) => {
+        currentPeriod = e.target.value;
+        await loadCotisationsForPeriod();
+        render();
+      });
+      document.getElementById("btn-generate")?.addEventListener("click", generateCotisationsForPeriod);
+      document.querySelectorAll("[data-pay]").forEach(el => {
+        el.addEventListener("click", () => openPayModal(el.dataset.pay));
+      });
+    }
+
+    function openPayModal(cotId) {
+      const c = cotisations.find(x => x.id === cotId);
+      const b = biens.find(x => x.id === c.bienId);
+      const today = new Date().toISOString().split("T")[0];
+      const suggestedRecu = c.recuNumero || `REC-${currentPeriod}-${b.numero}`;
+
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.innerHTML = `
+        <div class="modal">
+          <div class="modal-header">
+            <div class="modal-title">Paiement de ${escapeHtml(b.displayName)} — ${formatPeriodFR(currentPeriod)}</div>
+            <button class="modal-close" id="m-close">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-info">
+              Cotisation due : <strong>${formatMAD(c.montantDu || 0)}</strong>
+              ${(c.montantPaye || 0) > 0 ? `<br>Déjà payé : <strong>${formatMAD(c.montantPaye)}</strong>` : ""}
+            </div>
+            <div class="grid grid-cols-2">
+              <div class="form-group">
+                <label class="form-label">Montant payé (DH) *</label>
+                <input class="form-input" type="number" step="0.01" id="p-montant" value="${c.montantPaye || c.montantDu || 0}" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Date du paiement *</label>
+                <input class="form-input" type="date" id="p-date" value="${c.datePaiement ? new Date(c.datePaiement).toISOString().split('T')[0] : today}" required />
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mode de paiement</label>
+              <select class="form-select" id="p-mode">
+                <option value="">—</option>
+                <option value="VIREMENT" ${c.modePaiement === "VIREMENT" ? "selected" : ""}>Virement</option>
+                <option value="CHEQUE" ${c.modePaiement === "CHEQUE" ? "selected" : ""}>Chèque</option>
+                <option value="ESPECES" ${c.modePaiement === "ESPECES" ? "selected" : ""}>Espèces</option>
+                <option value="AUTRE" ${c.modePaiement === "AUTRE" ? "selected" : ""}>Autre</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">N° de reçu</label>
+              <input class="form-input" id="p-recu" value="${escapeHtml(suggestedRecu)}" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Notes</label>
+              <textarea class="form-textarea" id="p-notes">${escapeHtml(c.notes || "")}</textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="m-cancel">Annuler</button>
+            ${(c.montantPaye || 0) > 0 ? '<button class="btn btn-danger" id="m-reset">Annuler le paiement</button>' : ""}
+            <button class="btn btn-primary" id="m-save">Enregistrer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      document.getElementById("m-close").addEventListener("click", close);
+      document.getElementById("m-cancel").addEventListener("click", close);
+      overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+
+      document.getElementById("m-reset")?.addEventListener("click", async () => {
+        if (!confirm("Réinitialiser ce paiement ?")) return;
+        try {
+          await updateDoc(doc(db, "cotisations", cotId), {
+            montantPaye: 0, datePaiement: null, modePaiement: null, recuNumero: null,
+          });
+          toast("Paiement annulé.", "success");
+          close();
+          await loadCotisationsForPeriod();
+          render();
+        } catch (err) { toast("Erreur : " + err.message, "error"); }
+      });
+
+      document.getElementById("m-save").addEventListener("click", async () => {
+        const montant = parseFloat(document.getElementById("p-montant").value);
+        const dateStr = document.getElementById("p-date").value;
+        const mode = document.getElementById("p-mode").value || null;
+        const recu = document.getElementById("p-recu").value.trim() || null;
+        const notes = document.getElementById("p-notes").value.trim() || null;
+        if (!montant || !dateStr) { toast("Montant et date obligatoires.", "error"); return; }
+
+        const btn = document.getElementById("m-save");
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loader"></span> Enregistrement…';
+        try {
+          await updateDoc(doc(db, "cotisations", cotId), {
+            montantPaye: montant,
+            datePaiement: new Date(dateStr).toISOString(),
+            modePaiement: mode,
+            recuNumero: recu,
+            notes,
+          });
+          toast("Paiement enregistré.", "success");
+          close();
+          await loadCotisationsForPeriod();
+          render();
+        } catch (err) {
+          toast("Erreur : " + err.message, "error");
+          btn.disabled = false;
+          btn.textContent = "Enregistrer";
+        }
+      });
+    }
+
+    document.getElementById("app").innerHTML = '<div id="page-content"><div class="loader-page"><div><span class="loader"></span> Chargement…</div></div></div>';
+    mountShell(Role.ADMIN, session.profile);
+    await loadBiens();
+    await loadCotisationsForPeriod();
+    render();
+  </script>
+</body>
+</html>
