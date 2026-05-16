@@ -90,25 +90,9 @@
       statusEl.textContent = msg;
     }
 
-    // Vérifier que la collection users est vide
-    (async () => {
-      try {
-        const snap = await getDocs(collection(db, "users"));
-        if (!snap.empty) {
-          setupSection.classList.add("hidden");
-          showStatus(
-            "Le syndic a déjà été initialisé. Cette page n'est plus utilisable. → Aller à /index.html",
-            "warning"
-          );
-        }
-      } catch (e) {
-        showStatus(
-          "Impossible de lire Firestore. Vérifiez que les rules autorisent la lecture en mode test (voir README).",
-          "error"
-        );
-        console.error(e);
-      }
-    })();
+    // Note : on ne fait plus de pré-check du fait que les rules SETUP
+    // peuvent restreindre la lecture. createUserWithEmailAndPassword
+    // renverra auth/email-already-in-use si on essaie de re-setup.
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
