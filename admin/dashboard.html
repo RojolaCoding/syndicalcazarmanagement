@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Tableau de bord — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page">
+      <div><span class="loader"></span> Chargement…</div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { db } from "/assets/js/firebase-init.js";
+    import { collection, getCountFromServer, getDocs, query, where } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+    import { formatMAD } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.ADMIN);
+    if (!session) throw new Error("redirected");
+
+    // Compteurs rapides
+    const [nbBiens, nbCopros] = await Promise.all([
+      getCountFromServer(collection(db, "biens")).then(s => s.data().count).catch(() => 0),
+      getCountFromServer(query(collection(db, "users"), where("role", "==", "COPRO"))).then(s => s.data().count).catch(() => 0),
+    ]);
+
+    // Préparer le contenu de la page
+    document.getElementById("app").innerHTML = `
+      <h1 class="mb-1">Tableau de bord</h1>
+      <p class="text-muted text-sm mb-6">Vue d'ensemble — résidence Alcazar</p>
+
+      <div class="alert alert-info">
+        🚧 Application en cours de construction. Les fondations sont en place
+        (auth, comptes, biens, charges récurrentes). Les modules cotisations,
+        plaintes, propositions et transparence arrivent dans les prochaines
+        étapes.
+      </div>
+
+      <div class="grid grid-cols-1 grid-cols-md-4 mb-6">
+        <div class="kpi">
+          <div class="kpi-label">Biens</div>
+          <div class="kpi-value">${nbBiens}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Copropriétaires inscrits</div>
+          <div class="kpi-value">${nbCopros}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Collecté ce mois</div>
+          <div class="kpi-value">${formatMAD(0)}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Dépensé ce mois</div>
+          <div class="kpi-value">${formatMAD(0)}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Prochaines étapes</div>
+          <div class="card-description">Modules à construire après les fondations</div>
+        </div>
+        <div class="card-body">
+          <ol style="padding-left: 1.25rem;">
+            <li>Édition des biens + génération codes d'invitation</li>
+            <li>Page d'inscription publique (avec code)</li>
+            <li>Cotisations mensuelles + reçus PDF</li>
+            <li>Onglet Transparence financière (vue publique)</li>
+            <li>Plaintes (modération admin avant publication)</li>
+            <li>Propositions et soutiens</li>
+          </ol>
+        </div>
+      </div>
+    `;
+
+    mountShell(Role.ADMIN, session.profile);
+  </script>
+</body>
+</html>

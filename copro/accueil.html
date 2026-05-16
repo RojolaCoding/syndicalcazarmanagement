@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Accueil — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loader-page">
+      <div><span class="loader"></span> Chargement…</div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, Role } from "/assets/js/auth.js";
+    import { mountShell } from "/assets/js/shell.js";
+    import { escapeHtml } from "/assets/js/utils.js";
+
+    const session = await requireAuth(Role.COPRO);
+    if (!session) throw new Error("redirected");
+
+    document.getElementById("app").innerHTML = `
+      <h1 class="mb-1">Bienvenue, ${escapeHtml(session.profile.prenom)}</h1>
+      <p class="text-muted text-sm mb-6">
+        Votre espace copropriétaire — résidence Alcazar
+      </p>
+
+      <div class="alert alert-info">
+        🚧 Espace en cours de construction. Les fonctionnalités (paiements,
+        plaintes, propositions) seront disponibles dans les prochaines phases.
+      </div>
+
+      <div class="grid grid-cols-1 grid-cols-md-2">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Mes biens</div>
+            <div class="card-description">Liste de mes propriétés et statut de paiement</div>
+          </div>
+          <div class="card-body text-muted text-sm">À venir.</div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Transparence financière</div>
+            <div class="card-description">Situation de la résidence</div>
+          </div>
+          <div class="card-body text-muted text-sm">À venir.</div>
+        </div>
+      </div>
+    `;
+
+    mountShell(Role.COPRO, session.profile);
+  </script>
+</body>
+</html>
