@@ -1,0 +1,130 @@
+// ============================================================
+// FIRESTORE RULES — PRODUCTION
+// ============================================================
+// À coller dans : console Firebase → Firestore → Onglet "Règles"
+// APRÈS avoir exécuté /setup.html une fois avec succès.
+// ============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return isAuth() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+    function isMe(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // ─── Users ──────────────────────────────────────────────
+    // Chacun lit son propre profil. L'admin lit tout.
+    // Création : un nouvel utilisateur peut créer son propre doc à l'inscription.
+    // Update : admin peut tout, copro peut éditer son propre doc sauf le rôle.
+    match /users/{uid} {
+      allow read: if isMe(uid) || isAdmin();
+      allow create: if isMe(uid);
+      allow update: if isAdmin()
+        || (isMe(uid) && !('role' in request.resource.data.diff(resource.data).affectedKeys()));
+      allow delete: if isAdmin();
+    }
+
+    // ─── Biens ──────────────────────────────────────────────
+    // Lecture pour tous les authentifiés. Écriture admin seul.
+    match /biens/{bienId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── Propriété des biens (N-N pour indivision) ──────────
+    match /propertyOwnerships/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── Charges récurrentes (transparence) ─────────────────
+    match /chargesRecurrentes/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── Dépenses (transparence) ────────────────────────────
+    match /depenses/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── Cotisations ────────────────────────────────────────
+    // Lecture par tous les authentifiés (transparence semi-anonyme).
+    // L'app gère le masquage des noms côté UI.
+    match /cotisations/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── Invitations ────────────────────────────────────────
+    // Lecture publique pour permettre la vérif du code à l'inscription.
+    // Création/suppression : admin. Update : la personne qui s'inscrit
+    // peut marquer "used".
+    match /invitations/{code} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAuth();
+    }
+
+    // ─── Plaintes ───────────────────────────────────────────
+    // Lecture : publiques OU privées de l'auteur OU admin.
+    // Création : tout authentifié, statut initial PENDING_MODERATION.
+    // Update : auteur (sur ses propres champs) OU admin.
+    match /plaintes/{id} {
+      allow read: if isAuth() && (
+        resource.data.visibilite == 'PUBLIQUE'
+        || isAdmin()
+        || resource.data.auteurId == request.auth.uid
+      );
+      allow create: if isAuth()
+        && request.resource.data.auteurId == request.auth.uid
+        && request.resource.data.visibilite == 'PENDING_MODERATION'
+        && request.resource.data.statut == 'NOUVEAU';
+      allow update, delete: if isAdmin() || (resource.data.auteurId == request.auth.uid);
+    }
+
+    // ─── Sous-collection : commentaires de plainte ──────────
+    match /plaintes/{plainteId}/commentaires/{commentId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.auteurId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // ─── Propositions ───────────────────────────────────────
+    match /propositions/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.auteurId == request.auth.uid;
+      allow update, delete: if isAdmin() || (resource.data.auteurId == request.auth.uid);
+    }
+
+    // ─── Soutiens ───────────────────────────────────────────
+    // Chacun crée/supprime ses propres soutiens.
+    match /soutiens/{id} {
+      allow read: if isAuth();
+      allow create, delete: if isAuth() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Notifications ──────────────────────────────────────
+    match /notifications/{id} {
+      allow read: if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isAdmin();
+      allow update: if isAuth() && resource.data.userId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // ─── Audit log (admin only) ─────────────────────────────
+    match /auditLog/{id} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Syndic Alcazar — Initialisation</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div class="auth-page">
+    <div class="auth-card" style="max-width: 32rem;">
+      <h1 class="auth-title">Initialisation du syndic</h1>
+      <p class="auth-subtitle">
+        Cette page ne sert qu'au tout premier lancement : elle crée le compte
+        administrateur et seed les 47 biens.
+      </p>
+
+      <div id="status"></div>
+
+      <div id="setup-section">
+        <p class="text-sm text-muted mb-3">
+          Confirmez les infos administrateur. Le PIN sera votre mot de passe :
+          choisissez-le solide (≥ 8 caractères, mélange chiffres/lettres).
+        </p>
+
+        <form id="setup-form">
+          <div class="form-group">
+            <label class="form-label" for="prenom">Prénom</label>
+            <input class="form-input" id="prenom" value="Saad" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="nom">Nom</label>
+            <input class="form-input" id="nom" value="Lahlou" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="email">Email</label>
+            <input
+              class="form-input"
+              type="email"
+              id="email"
+              value="saadlahloulay8@gmail.com"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="telephone">Téléphone</label>
+            <input class="form-input" id="telephone" value="+212663402019" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pin">PIN (≥ 8 caractères)</label>
+            <input class="form-input" type="password" id="pin" minlength="8" required />
+            <p class="form-help">Mémorisez-le ou notez-le maintenant.</p>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pin2">Confirmer le PIN</label>
+            <input class="form-input" type="password" id="pin2" minlength="8" required />
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-block btn-lg" id="submit-btn">
+            Initialiser le syndic
+          </button>
+        </form>
+      </div>
+
+      <div id="success-section" class="hidden">
+        <div class="alert alert-success">
+          ✅ Syndic initialisé avec succès.
+        </div>
+        <p class="text-sm mb-4">Vous pouvez vous connecter avec votre email et le PIN choisi.</p>
+        <a href="/index.html" class="btn btn-primary btn-block">Aller à la connexion</a>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { auth, db } from "/assets/js/firebase-init.js";
+    import { createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import {
+      doc, setDoc, getDocs, collection, serverTimestamp, writeBatch,
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+    const statusEl = document.getElementById("status");
+    const setupSection = document.getElementById("setup-section");
+    const successSection = document.getElementById("success-section");
+    const form = document.getElementById("setup-form");
+    const btn = document.getElementById("submit-btn");
+
+    function showStatus(msg, variant = "info") {
+      statusEl.className = `alert alert-${variant}`;
+      statusEl.textContent = msg;
+    }
+
+    // Vérifier que la collection users est vide
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "users"));
+        if (!snap.empty) {
+          setupSection.classList.add("hidden");
+          showStatus(
+            "Le syndic a déjà été initialisé. Cette page n'est plus utilisable. → Aller à /index.html",
+            "warning"
+          );
+        }
+      } catch (e) {
+        showStatus(
+          "Impossible de lire Firestore. Vérifiez que les rules autorisent la lecture en mode test (voir README).",
+          "error"
+        );
+        console.error(e);
+      }
+    })();
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const prenom = document.getElementById("prenom").value.trim();
+      const nom = document.getElementById("nom").value.trim();
+      const email = document.getElementById("email").value.trim().toLowerCase();
+      const telephone = document.getElementById("telephone").value.trim();
+      const pin = document.getElementById("pin").value;
+      const pin2 = document.getElementById("pin2").value;
+
+      if (pin !== pin2) {
+        showStatus("Les deux PIN ne correspondent pas.", "error");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Création en cours…';
+      showStatus("Création du compte admin Firebase Auth…", "info");
+
+      try {
+        // 1. Création compte Auth
+        const cred = await createUserWithEmailAndPassword(auth, email, pin);
+        const uid = cred.user.uid;
+
+        // 2. Doc Firestore admin
+        showStatus("Création du profil admin…", "info");
+        await setDoc(doc(db, "users", uid), {
+          email,
+          telephone,
+          nom,
+          prenom,
+          role: "ADMIN",
+          createdAt: serverTimestamp(),
+          lastLogin: null,
+          pinResetRequired: false,
+        });
+
+        // 3. Seed des 47 biens en batch
+        showStatus("Création des 47 biens…", "info");
+        const batch = writeBatch(db);
+        const biens = buildBiens();
+        for (const b of biens) {
+          batch.set(doc(db, "biens", b.id), b);
+        }
+
+        // 4. Charges récurrentes
+        const charges = [
+          { libelle: "Gardiennage", categorie: "GARDIENNAGE", montantMensuelAttendu: 6000, fournisseur: "Société de gardiennage", actif: true },
+          { libelle: "Nettoyage parties communes", categorie: "NETTOYAGE", montantMensuelAttendu: 2500, fournisseur: "Société de nettoyage", actif: true },
+          { libelle: "Entretien ascenseur", categorie: "ASCENSEUR", montantMensuelAttendu: 1200, fournisseur: "Ascensoriste", actif: true },
+          { libelle: "Eau parties communes", categorie: "EAU", montantMensuelAttendu: 400, fournisseur: "LYDEC", actif: true },
+          { libelle: "Électricité parties communes", categorie: "ELECTRICITE", montantMensuelAttendu: 800, fournisseur: "LYDEC", actif: true },
+        ];
+        for (let i = 0; i < charges.length; i++) {
+          batch.set(doc(db, "chargesRecurrentes", `charge_${i + 1}`), charges[i]);
+        }
+
+        await batch.commit();
+
+        // 5. Reconnexion propre (createUser nous a auto-loggué, on signe-out pour forcer relogin)
+        await signOut(auth);
+
+        showStatus("", "info");
+        statusEl.className = "hidden";
+        setupSection.classList.add("hidden");
+        successSection.classList.remove("hidden");
+      } catch (err) {
+        console.error(err);
+        let msg = err.message;
+        if (err.code === "auth/email-already-in-use")
+          msg = "Cet email a déjà un compte Firebase. Effacez-le depuis Authentication > Users dans la console, puis réessayez.";
+        else if (err.code === "permission-denied")
+          msg = "Permission refusée. Les Firestore rules ne sont pas en mode test. Voir README.";
+        else if (err.code === "auth/weak-password")
+          msg = "PIN trop faible (minimum 6 caractères).";
+        showStatus(msg, "error");
+        btn.disabled = false;
+        btn.textContent = "Initialiser le syndic";
+      }
+    });
+
+    function buildBiens() {
+      const biens = [];
+      // 39 résidentiels APT-01 → APT-39
+      for (let i = 1; i <= 39; i++) {
+        const id = `APT-${String(i).padStart(2, "0")}`;
+        biens.push({
+          id,
+          numero: id,
+          type: "RESIDENTIEL",
+          tantieme: 215,
+          cotisationMensuelle: 400,
+          statut: "OCCUPE",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      // 3 magasins résidence
+      for (let i = 1; i <= 3; i++) {
+        const id = `M-${i}`;
+        biens.push({
+          id,
+          numero: id,
+          type: "MAGASIN_RESIDENCE",
+          tantieme: 215,
+          cotisationMensuelle: 400,
+          statut: "OCCUPE",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      // 5 magasins carrefour
+      for (let i = 1; i <= 5; i++) {
+        const id = `C-${i}`;
+        biens.push({
+          id,
+          numero: id,
+          type: "MAGASIN_CARREFOUR",
+          tantieme: 194,
+          cotisationMensuelle: 350,
+          statut: "OCCUPE",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      return biens;
+    }
+  </script>
+</body>
+</html>

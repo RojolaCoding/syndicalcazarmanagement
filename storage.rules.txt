@@ -1,0 +1,44 @@
+// ============================================================
+// FIREBASE STORAGE RULES
+// ============================================================
+// À coller dans : console Firebase → Storage → Onglet "Règles"
+// ============================================================
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuth() { return request.auth != null; }
+    function isAdmin() {
+      return isAuth() &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+
+    // Photos de plaintes : lecture par tous auth, upload par auteur ou admin
+    match /plaintes/{plainteId}/{fileName} {
+      allow read: if isAuth();
+      allow write: if isAuth()
+        && request.resource.size < 5 * 1024 * 1024  // 5 MB max
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // Justificatifs de dépenses : admin seul écrit, tous auth lisent
+    match /justificatifs/{fileName} {
+      allow read: if isAuth();
+      allow write: if isAdmin()
+        && request.resource.size < 10 * 1024 * 1024  // 10 MB max
+        && (request.resource.contentType.matches('image/.*')
+            || request.resource.contentType == 'application/pdf');
+    }
+
+    // Devis attachés aux propositions
+    match /propositions/{propId}/{fileName} {
+      allow read: if isAuth();
+      allow write: if isAuth()
+        && request.resource.size < 10 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*')
+            || request.resource.contentType == 'application/pdf');
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Netlify
+.netlify/
+
+# Secrets locaux (si jamais)
+.env
+.env.local
+*.secret.json
+service-account-*.json

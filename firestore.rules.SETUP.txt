@@ -1,0 +1,21 @@
+// ============================================================
+// FIRESTORE RULES — PHASE SETUP (temporaire, à remplacer après !)
+// ============================================================
+// À coller dans : console Firebase → Firestore → Onglet "Règles"
+//
+// Ces règles permettent à n'importe quel utilisateur authentifié
+// de lire et écrire — nécessaire pour que /setup.html puisse créer
+// l'admin et seeder les 47 biens.
+//
+// 🚨 DÈS QUE LE SETUP EST FAIT, remplacez ces règles par celles de
+// firestore.rules.PRODUCTION.txt.
+// ============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

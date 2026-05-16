@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#059669" />
+  <title>Inscription — Syndic Alcazar</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div class="auth-page">
+    <div class="auth-card">
+      <h1 class="auth-title">Créer mon compte</h1>
+      <p class="auth-subtitle">
+        Saisissez le code d'invitation reçu de la part du syndic.
+      </p>
+
+      <div id="alert" class="hidden"></div>
+
+      <form id="signup-form">
+        <div class="form-group">
+          <label class="form-label" for="code">Code d'invitation (6 chiffres)</label>
+          <input class="form-input" id="code" inputmode="numeric" maxlength="6" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="prenom">Prénom</label>
+          <input class="form-input" id="prenom" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="nom">Nom</label>
+          <input class="form-input" id="nom" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="email">Email</label>
+          <input class="form-input" type="email" id="email" required />
+          <p class="form-help">Cet email sera votre identifiant de connexion.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="pin">Choisir un PIN (≥ 8 caractères)</label>
+          <input class="form-input" type="password" id="pin" minlength="8" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="pin2">Confirmer le PIN</label>
+          <input class="form-input" type="password" id="pin2" minlength="8" required />
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="submit-btn">
+          Créer mon compte
+        </button>
+      </form>
+
+      <p class="text-center text-sm text-muted mt-4">
+        Déjà inscrit&nbsp;? <a href="/index.html">Se connecter</a>
+      </p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { signupWithInvitation } from "/assets/js/auth.js";
+
+    const form = document.getElementById("signup-form");
+    const btn = document.getElementById("submit-btn");
+    const alertEl = document.getElementById("alert");
+
+    function showError(msg) {
+      alertEl.textContent = msg;
+      alertEl.className = "alert alert-error";
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const code = document.getElementById("code").value.trim();
+      const prenom = document.getElementById("prenom").value.trim();
+      const nom = document.getElementById("nom").value.trim();
+      const email = document.getElementById("email").value.trim().toLowerCase();
+      const pin = document.getElementById("pin").value;
+      const pin2 = document.getElementById("pin2").value;
+
+      if (pin !== pin2) return showError("Les deux PIN ne correspondent pas.");
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Création…';
+      try {
+        await signupWithInvitation({ code, email, pin, prenom, nom });
+        window.location.href = "/copro/accueil.html";
+      } catch (err) {
+        let msg = err.message || "Erreur inconnue.";
+        if (err.code === "auth/email-already-in-use")
+          msg = "Cet email a déjà un compte. Connectez-vous ou contactez le syndic.";
+        else if (err.code === "auth/weak-password")
+          msg = "PIN trop faible (minimum 6 caractères).";
+        showError(msg);
+        btn.disabled = false;
+        btn.textContent = "Créer mon compte";
+      }
+    });
+  </script>
+</body>
+</html>

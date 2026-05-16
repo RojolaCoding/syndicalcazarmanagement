@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#059669" />
+  <title>Syndic Alcazar — Connexion</title>
+  <link rel="stylesheet" href="/assets/css/main.css" />
+</head>
+<body>
+  <div class="auth-page">
+    <div class="auth-card">
+      <h1 class="auth-title">Syndic Alcazar</h1>
+      <p class="auth-subtitle">Connectez-vous à votre espace</p>
+
+      <div id="alert" class="hidden"></div>
+
+      <form id="login-form">
+        <div class="form-group">
+          <label class="form-label" for="email">Email</label>
+          <input
+            class="form-input"
+            type="email"
+            id="email"
+            name="email"
+            autocomplete="username"
+            inputmode="email"
+            required
+          />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="pin">Code PIN</label>
+          <input
+            class="form-input"
+            type="password"
+            id="pin"
+            name="pin"
+            autocomplete="current-password"
+            required
+            minlength="6"
+          />
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="submit-btn">
+          Se connecter
+        </button>
+      </form>
+
+      <p class="text-center text-sm text-muted mt-4">
+        Vous avez un code d'invitation&nbsp;?
+        <a href="/inscription.html">Créer un compte</a>
+      </p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { login, getAuthReady, getUserProfile, Role } from "/assets/js/auth.js";
+
+    // Si déjà connecté, on redirige direct
+    (async () => {
+      const user = await getAuthReady();
+      if (user) {
+        const profile = await getUserProfile(user.uid);
+        if (profile) {
+          window.location.href =
+            profile.role === Role.ADMIN ? "/admin/dashboard.html" : "/copro/accueil.html";
+        }
+      }
+    })();
+
+    const form = document.getElementById("login-form");
+    const btn = document.getElementById("submit-btn");
+    const alertEl = document.getElementById("alert");
+
+    function showError(msg) {
+      alertEl.textContent = msg;
+      alertEl.className = "alert alert-error";
+    }
+    function clearError() {
+      alertEl.className = "hidden";
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearError();
+      const email = document.getElementById("email").value.trim();
+      const pin = document.getElementById("pin").value;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loader"></span> Connexion…';
+
+      try {
+        const { profile } = await login(email, pin);
+        window.location.href =
+          profile.role === Role.ADMIN ? "/admin/dashboard.html" : "/copro/accueil.html";
+      } catch (err) {
+        const code = err.code || "";
+        let msg = "Email ou PIN incorrect.";
+        if (code === "auth/too-many-requests")
+          msg = "Trop de tentatives. Réessayez dans quelques minutes.";
+        else if (code === "auth/network-request-failed")
+          msg = "Pas de connexion internet.";
+        else if (code === "auth/invalid-email") msg = "Email invalide.";
+        else if (err.message && !code) msg = err.message;
+        showError(msg);
+        btn.disabled = false;
+        btn.textContent = "Se connecter";
+      }
+    });
+  </script>
+</body>
+</html>
